@@ -39,6 +39,7 @@ define(["require", "jquery", "util", "session", "ui", "peers", "storage", "windo
   var URL = window.webkitURL || window.URL;
   var RTCSessionDescription = window.mozRTCSessionDescription || window.webkitRTCSessionDescription || window.RTCSessionDescription;
   var RTCIceCandidate = window.mozRTCIceCandidate || window.webkitRTCIceCandidate || window.RTCIceCandidate;
+  var requestAnimationFrame = window.requestAnimationFrame || window.mozRequestAnimationFrame || window.webkitRequestAnimationFrame;
 
   function makePeerConnection() {
     // Based roughly off: https://github.com/firebase/gupshup/blob/gh-pages/js/chat.js
@@ -260,6 +261,10 @@ define(["require", "jquery", "util", "session", "ui", "peers", "storage", "windo
     var answerDescription = false;
     var _connection = null;
     var iceCandidate = null;
+    var audioContext = null;
+    var sourceNode = null;
+    var analyserNode = null;
+    var audioByteBuffer = null;
 
     function enableAudio() {
       accepted = true;
@@ -360,6 +365,7 @@ define(["require", "jquery", "util", "session", "ui", "peers", "storage", "windo
         console.log("got event", event, event.type);
         attachMedia($audio, event.stream);
         audioButton("#togetherjs-audio-active");
+        volumeIndicatorSetup(event.stream);
       };
       _connection.onstatechange = function () {
         // FIXME: this doesn't seem to work:
@@ -367,6 +373,7 @@ define(["require", "jquery", "util", "session", "ui", "peers", "storage", "windo
         console.log("state change", _connection.readyState);
         if (_connection.readyState == "closed") {
           audioButton("#togetherjs-audio-ready");
+          volumeIndicatorTeardown();
         }
       };
       _connection.onicecandidate = function (event) {
@@ -469,6 +476,57 @@ define(["require", "jquery", "util", "session", "ui", "peers", "storage", "windo
       // FIXME: implement.  Actually, wait for this to be implementable - currently
       // muting of localStreams isn't possible
       // FIXME: replace with hang-up?
+    }
+
+    function volumeIndicatorSetup(stream) {
+      var AudioContext = window.AudioContext || window.webkitAudioContext;
+      try {
+        audioContext = AudioContext();
+      } catch (exception) {
+        return;
+      }
+      sourceNode = audioContext.createMediaStreamSource(stream);
+      analyserNode = audioContext.createAnalyser();
+      if (sourceNode == null || analyserNode == null) {
+        return;
+      }
+      sourceNode.connect(analyserNode);
+      audioByteBuffer = Uint8Array(analyserNode.fftSize);
+      requestAnimationFrame(volumeIndicatorFrame);
+    }
+
+    function volumeIndicatorTeardown() {
+      if (sourceNode != null) {
+        sourceNode.disconnect();
+      }
+      audioContext = null;
+      sourceNode = null;
+      analyserNode = null;
+      audioByteBuffer = null;
+    }
+
+    function volumeIndicatorFrame(timestamp) {
+      if (analyserNode != null) {
+        var length = audioByteBuffer.length;
+        analyserNode.getByteTimeDomainData(audioByteBuffer);
+        var volumeSS = 0;
+        for (var i = 0; i < length; i++) {
+          var sample = audioByteBuffer[i] - 128;
+          volumeSS += sample * sample;
+        }
+        var volumeRSSavg = Math.sqrt(volumeSS / length) / 128;
+        //console.log(volumeRSSavg);
+        if (volumeRSSavg < 0.01) {
+          document.body.style.backgroundColor = 'white';
+        } else if (volumeRSSavg < 0.05) {
+          document.body.style.backgroundColor = 'blue';
+        } else if (volumeRSSavg < 0.20) {
+          document.body.style.backgroundColor = 'green';
+        } else {
+          document.body.style.backgroundColor = 'red';
+        }
+        requestAnimationFrame(volumeIndicatorFrame);
+      }
     }
 
     session.hub.on("rtc-offer", function (msg) {
